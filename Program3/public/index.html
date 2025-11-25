@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/ol@7.5.2/ol.css"
+  crossorigin="anonymous"
+/>
+<title>左右縦配置（天気／時計／センサー）</title>
+<style>
+  :root{
+    --bg:#121212; --fg:#f0f0f0; --muted:#aaa; --card:#1e1e1e; --panel:#2a2a2a; --border:#333; --accent:#00bfff;
+  }
+  /* ===== ベース ===== */
+  html, body { background:var(--bg); color:var(--fg); }
+  body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; }
+  h1{ text-align:center; font-size:1.1rem; margin:16px 0 8px; color:#fff; }
+
+  .layout{
+    display:grid;
+    grid-template-columns: 120px 1fr 120px;
+    gap:12px;
+    padding:12px;
+    max-width: 940px;
+    margin: 0 auto 24px;
+  }
+  @media (max-width:480px){
+    .layout{ grid-template-columns: 96px 1fr 96px; }
+  }
+
+  .panel{
+    background:var(--card);
+    border-radius:16px;
+    box-shadow:0 8px 24px rgba(255,255,255,.08);
+    padding:12px;
+    height:100%;
+    min-height:0;           /* 内部はみ出し防止 */
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .title{ text-align:center; font-weight:700; color:#e6e6e6; font-size:.95rem; }
+  .muted{ color:var(--muted); }
+
+  .vstack{ display:flex; flex-direction:column; gap:10px; align-items:stretch; min-height:0; }
+  .wx-item{
+    border:1px solid var(--border); background:var(--panel); border-radius:12px; padding:10px 8px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    min-height:70px;
+    flex:1 1 auto;          /* 高さのやりくり */
+  }
+  .wx-emoji{ font-size:1.8rem; line-height:1; }
+  .wx-label{ font-size:.8rem; color:var(--muted); margin-top:6px; }
+
+  .arrow{ display:flex; align-items:center; justify-content:center; color:#ddd; opacity:.9; }
+  .arrow svg{ width:18px; height:18px; fill:#ddd; }
+
+  .center{ display:flex; flex-direction:column; gap:12px; justify-content:flex-start; align-items:stretch; min-height:0; }
+  .map-wrapper{
+    border:1px solid var(--border);
+    background:var(--panel);
+    border-radius:16px;
+    padding:12px;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  #map{
+    width:100%;
+    min-height:300px;
+    border-radius:12px;
+    overflow:hidden;
+  }
+  #map-status{ text-align:center; }
+  .datetime{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    align-items:center;
+    justify-content:flex-start;
+    color:var(--muted);
+  }
+  #date{
+    font-size:1.1rem;
+    text-align:center;
+    margin:0;
+  }
+  #clock{
+    font-size:3rem;
+    font-weight:700;
+    color:#00bfff;
+    letter-spacing:2px;
+    white-space:nowrap;
+    text-align:center;
+  }
+
+  .kv{
+    border:1px solid var(--border); background:var(--panel); border-radius:12px; padding:12px;
+    text-align:center;
+    flex:1 1 auto;          /* 高さ可変 */
+    display:flex; flex-direction:column; justify-content:center;
+  }
+  .kv .k{ color:var(--muted); font-size:.9rem; }
+  .kv .v{ font-size:1.4rem; font-weight:700; color:#00bfff; margin-top:4px; }
+
+  .assistant-box{
+    border:1px solid var(--border);
+    background:var(--panel);
+    border-radius:12px;
+    padding:10px;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .assistant-box button{
+    border:none;
+    border-radius:12px;
+    padding:12px;
+    font-size:1rem;
+    font-weight:600;
+    background:var(--accent);
+    color:#000;
+    cursor:pointer;
+  }
+  .assistant-box button:disabled{
+    opacity:0.6;
+    cursor:not-allowed;
+  }
+  .assistant-reply{
+    min-height:2.5rem;
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:10px;
+    background:var(--panel);
+    font-size:0.95rem;
+    line-height:1.4;
+  }
+  #assistant-audio{
+    width:100%;
+  }
+
+  /* ======== landscape（横向き）で左右カードを小さく＆正方形 ======== */
+  @media (orientation: landscape){
+    /* 1画面に収める（スクロール禁止 & 安全領域考慮） */
+    html, body{ height:100svh; overflow:hidden; }
+    body{
+      padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0)
+               env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+    }
+
+    /* 正方形カードの基準サイズ（vh優先で自動縮小、vwでも上限） */
+    :root{
+      --side-card-vh: clamp(64px, 13.0vh, 120px);
+      --side-card-size: min(18vw, var(--side-card-vh));
+    }
+
+    /* レイアウト：左右をやや狭め、中央は可変 */
+    .layout{
+      height:100%;
+      max-width:none; margin:0;
+      grid-template-columns: clamp(110px, 19vw, 220px) 1fr clamp(110px, 19vw, 220px);
+      gap: 1.2vh;
+      padding: 1.2vh;
+    }
+
+    .panel{
+      border-radius: 1.2vh;
+      padding: 1.0vh;
+      gap: 1.0vh;
+      box-shadow: 0 0.8vh 2.2vh rgba(255,255,255,.08);
+      min-height:0; overflow:hidden;
+    }
+
+    /* ===== 左右パネルの中身：正方形化 ===== */
+    aside.panel.vstack{ align-items:center; }  /* 正方形を中央寄せ */
+
+    /* 天気（現在／30分後／1時間後） */
+    .wx-item{
+      width: var(--side-card-size);
+      aspect-ratio: 1 / 1;           /* 正方形！ */
+      padding: min(1.1vh, 10px);
+      display:flex; flex-direction:column; justify-content:center; align-items:center;
+      flex: 0 0 auto;                /* 伸び縮み禁止 */
+    }
+
+    /* センサー（気温／湿度） */
+    #sensor-panel .kv{
+      width: var(--side-card-size);
+      aspect-ratio: 1 / 1;           /* 正方形！ */
+      padding: min(1.1vh, 10px);
+      display:flex; flex-direction:column; justify-content:center; align-items:center;
+      flex: 0 0 auto;
+    }
+
+    /* タイトル・補助文字は自動縮小 */
+    .title{ font-size: clamp(0.9rem, 1.3vh, 1.05rem); text-align:center; }
+    .muted, .kv .k, .wx-label{ font-size: clamp(0.72rem, 1.1vh, 0.95rem); text-align:center; }
+
+    /* 絵文字・数値は正方形内で見やすく */
+    .wx-emoji{ font-size: clamp(1.1rem, 3vh, 2rem); line-height:1; }
+    .kv .v{ font-size: clamp(1.0rem, 2.8vh, 1.7rem); margin-top: 0.3em; }
+
+    /* 矢印は省スペース */
+    .arrow{ height:auto; }
+    .arrow svg{ width: min(2vh, 16px); height: min(2vh, 16px); }
+
+    /* 中央（時計）は残りスペースで可変 */
+    .center{ justify-content:flex-start; align-items:stretch; min-height:0; }
+    .map-wrapper{ padding:min(1.3vh, 12px); border-radius:12px; }
+    #map{ min-height:240px; }
+    .datetime{ align-items:center; }
+    .datetime #date{ font-size: clamp(0.9rem, 1.5vh, 1.1rem); }
+    .datetime #clock{ font-size: clamp(1.8rem, 6vh, 3.2rem); letter-spacing: clamp(0.06rem, 0.35vh, 0.16rem); white-space:nowrap; }
+  }
+</style>
+<body>
+
+  <div class="layout">
+    <!-- 左：天気 -->
+    <aside class="panel vstack">
+      <div class="title" id="wx-location">天気情報を取得中...</div>
+      <div id="wx-status" class="muted" style="text-align:center;">位置情報を取得中…</div>
+
+      <div class="wx-item">
+        <div class="wx-emoji" id="wx-now-emoji">--</div>
+        <div class="wx-label">現在</div>
+      </div>
+
+      <div class="arrow" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M12 19l-4-4m4 4l4-4"/></svg>
+      </div>
+
+      <div class="wx-item">
+        <div class="wx-emoji" id="wx-30m-emoji">--</div>
+        <div class="wx-label">30分後</div>
+      </div>
+
+      <div class="arrow" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M12 19l-4-4m4 4l4-4"/></svg>
+      </div>
+
+      <div class="wx-item">
+        <div class="wx-emoji" id="wx-1h-emoji">--</div>
+        <div class="wx-label">1時間後</div>
+      </div>
+    </aside>
+
+    <!-- 中央：日付・時計 -->
+    <main class="panel center">
+      <div class="datetime">
+        <div id="date">----年--月--日 (--)</div>
+        <div id="clock">--:--:--</div>
+      </div>
+      <div class="map-wrapper">
+        <div id="map"></div>
+        <div id="map-status" class="muted">GPS読み込み中…</div>
+      </div>
+    </main>
+
+    <!-- 右：センサー -->
+    <aside class="panel vstack" id="sensor-panel">
+      <div class="kv"><div class="k">気温(℃)</div><div class="v" id="temp-v">--</div></div>
+      <div class="kv"><div class="k">湿度(%)</div><div class="v" id="humi-v">--</div></div>
+      <div class="kv"><div class="k">海抜(m)</div><div class="v" id="alt-v">--</div></div>
+      <div class="muted" style="text-align:center;">更新: <code id="ts">-</code></div>
+      <div id="status" class="muted" style="text-align:center;">読み込み中…</div>
+      <div class="assistant-box">
+        <div class="title" style="font-size:0.9rem;">ミニ音声アシスタント</div>
+        <button id="assistant-btn">話しかける</button>
+        <div id="assistant-status" class="muted">ボタンを押して録音を開始します。</div>
+        <div id="assistant-reply" class="assistant-reply">-</div>
+        <audio id="assistant-audio" controls playsinline hidden></audio>
+      </div>
+    </aside>
+  </div>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/ol@7.5.2/dist/ol.js"
+    crossorigin="anonymous"
+  ></script>
+  <script>
+    /* ===== 設定 ===== */
+    const API_BASE = window.location.origin;
+    const USER_ID  = "02";
+    const FIELDS   = "temperature_c,humidity_percent,altitude_m";
+    const RANGE    = "-30d";
+    const GPS_FIELDS = "latitude,longitude";
+    const GPS_RANGE  = "-1h";
+    const MAP_ANIMATION_MS = 600;
+
+    /* ▼▼▼ 神奈川県藤沢市をデフォルト位置に設定 ▼▼▼ */
+    const FUJISAWA = { lat: 35.3389, lon: 139.4913 };
+    const FALLBACK_PLACE = "神奈川県藤沢市";
+    /* ▲▲▲ ここまで ▲▲▲ */
+
+    /* ===== 時計 ===== */
+    const dateEl = document.getElementById("date");
+    const clockEl = document.getElementById("clock");
+    function updateClock(){
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth()+1).padStart(2,"0");
+      const dd = String(now.getDate()).padStart(2,"0");
+      const days = ["日","月","火","水","木","金","土"];
+      const hh = String(now.getHours()).padStart(2,"0");
+      const mi = String(now.getMinutes()).padStart(2,"0");
+      const ss = String(now.getSeconds()).padStart(2,"0");
+      dateEl.textContent = `${yyyy}年${mm}月${dd}日 (${days[now.getDay()]})`;
+      clockEl.textContent = `${hh}:${mi}:${ss}`;
+    }
+    setInterval(updateClock, 1000); updateClock();
+
+    /* ===== 天気（Open-Meteo + Nominatim） ===== */
+    const wxLocation = document.getElementById("wx-location");
+    const wxStatus = document.getElementById("wx-status");
+    const nowEmoji = document.getElementById("wx-now-emoji");
+    const m30Emoji = document.getElementById("wx-30m-emoji");
+    const h1Emoji  = document.getElementById("wx-1h-emoji");
+
+    function codeToEmoji(code){
+      const c = Number(code);
+      if ([0].includes(c)) return "☀️";
+      if ([1].includes(c)) return "🌤️";
+      if ([2].includes(c)) return "⛅️";
+      if ([3].includes(c)) return "☁️";
+      if ([45,48].includes(c)) return "🌫️";
+      if ([51,53,55,56,57].includes(c)) return "🌦️";
+      if ([61,63,65,80,81,82].includes(c)) return "🌧️";
+      if ([71,73,75,77,85,86].includes(c)) return "❄️";
+      if ([95,96,99].includes(c)) return "⛈️";
+      return "❓";
+    }
+
+    // 取得成功でも精度が悪ければ藤沢市にフォールバック
+    const ACCURACY_THRESHOLD_M = 10000;
+    function getPositionOrFallback(){
+      return new Promise((resolve)=>{
+        if(!navigator.geolocation) return resolve(FUJISAWA);
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            const { latitude, longitude, accuracy } = pos.coords || {};
+            if (typeof accuracy !== "number" || !isFinite(accuracy) || accuracy > ACCURACY_THRESHOLD_M) {
+              resolve(FUJISAWA);
+            } else {
+              resolve({ lat: latitude, lon: longitude });
+            }
+          },
+          ()  => resolve(FUJISAWA),
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+        );
+      });
+    }
+
+    async function reverseGeocodeJapanese(lat, lon){
+      try{
+        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&accept-language=ja`;
+        const data = await fetch(url).then(r=>r.json());
+        const a = data.address || {};
+        return a.city || a.town || a.village || a.suburb || a.county || a.state || FALLBACK_PLACE;
+      }catch{ return FALLBACK_PLACE; }
+    }
+
+    async function fetchWeather(){
+      try{
+        wxStatus.textContent = "位置情報を取得中…";
+        const {lat, lon} = await getPositionOrFallback();
+        const place = await reverseGeocodeJapanese(lat, lon);
+        wxLocation.textContent = `${place}の天気`;
+        wxStatus.textContent = "天気を取得中…";
+
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=weather_code&hourly=weather_code&timezone=auto`;
+        const j = await fetch(url).then(r=>r.json());
+
+        const cur = j.current?.weather_code;
+        nowEmoji.textContent  = codeToEmoji(cur);
+
+        const times = j.hourly?.time || [];
+        const codes = j.hourly?.weather_code || [];
+        const now = new Date();
+        const target30 = new Date(now.getTime() + 30*60*1000);
+        const target60 = new Date(now.getTime() + 60*60*1000);
+        const idx30 = times.findIndex(t => new Date(t) >= target30);
+        const idx60 = times.findIndex(t => new Date(t) >= target60);
+        m30Emoji.textContent = (idx30 >= 0) ? codeToEmoji(codes[idx30]) : "—";
+        h1Emoji.textContent  = (idx60 >= 0) ? codeToEmoji(codes[idx60])  : "—";
+
+        wxStatus.textContent = "OK";
+      }catch(e){
+        wxStatus.textContent = "天気取得エラー: " + e.message;
+        nowEmoji.textContent = m30Emoji.textContent = h1Emoji.textContent = "❓";
+      }
+    }
+
+    /* ===== マップ（GPS座標） ===== */
+    function ensureMarkerStyle(){
+      if (!window.ol || markerStyle) return markerStyle;
+      markerStyle = new ol.style.Style({
+        image: new ol.style.Circle({
+          radius: 8,
+          fill: new ol.style.Fill({ color: "#00bfff" }),
+          stroke: new ol.style.Stroke({ color: "#083150", width: 2 }),
+        }),
+      });
+      return markerStyle;
+    }
+
+    function createMap(lngLat){
+      const center = ol.proj.fromLonLat(lngLat);
+      markerLayer = new ol.layer.Vector({
+        source: new ol.source.Vector(),
+      });
+      mapInstance = new ol.Map({
+        target: mapEl,
+        layers: [
+          new ol.layer.Tile({ source: new ol.source.OSM() }),
+          markerLayer,
+        ],
+        view: new ol.View({
+          center,
+          zoom: 16,
+          minZoom: 2,
+          maxZoom: 19,
+        }),
+        controls: ol.control.defaults.defaults({ attribution: true }),
+      });
+      markerFeature = new ol.Feature({ geometry: new ol.geom.Point(center) });
+      markerFeature.setStyle(ensureMarkerStyle());
+      markerLayer.getSource().addFeature(markerFeature);
+    }
+
+    function updateMapView(lat, lon){
+      if (!window.ol || !mapEl){
+        if (mapStatus){
+          mapStatus.textContent = "マップライブラリを読み込めませんでした";
+        }
+        return;
+      }
+      const lngLat = [Number(lon), Number(lat)];
+      if (!mapInstance){
+        createMap(lngLat);
+        return;
+      }
+      const coords = ol.proj.fromLonLat(lngLat);
+      const view = mapInstance.getView();
+      view.animate({ center: coords, duration: MAP_ANIMATION_MS });
+      if (!markerFeature){
+        markerFeature = new ol.Feature({ geometry: new ol.geom.Point(coords) });
+        markerFeature.setStyle(ensureMarkerStyle());
+        markerLayer.getSource().addFeature(markerFeature);
+      }else{
+        markerFeature.getGeometry().setCoordinates(coords);
+      }
+    }
+
+    async function fetchGps(){
+      if (!mapStatus) return;
+      mapStatus.textContent = "GPS読み込み中…";
+      try{
+        const url = `${API_BASE}/api/latest_gps?user_id=${encodeURIComponent(USER_ID)}&fields=${encodeURIComponent(GPS_FIELDS)}&time_range=${encodeURIComponent(GPS_RANGE)}`;
+        const res = await fetch(url);
+        if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const json = await res.json();
+
+        const { lat, lon, timestamp } = json;
+        if (lat == null || lon == null) throw new Error("座標が取得できません");
+        updateMapView(Number(lat), Number(lon));
+        mapStatus.textContent = `GPS更新: ${formatTimeToJP(timestamp)}`;
+      }catch(e){
+        mapStatus.textContent = "GPSエラー: " + e.message + " / デフォルト位置を表示します";
+        updateMapView(FUJISAWA.lat, FUJISAWA.lon);
+      }
+    }
+
+    /* ===== センサー情報 ===== */
+    const statusEl = document.getElementById("status");
+    const tsEl     = document.getElementById("ts");
+    const tempV    = document.getElementById("temp-v");
+    const humiV    = document.getElementById("humi-v");
+    const altV     = document.getElementById("alt-v");
+    const mapEl    = document.getElementById("map");
+    const mapStatus = document.getElementById("map-status");
+    let mapInstance = null;
+    let markerLayer = null;
+    let markerFeature = null;
+    let markerStyle = null;
+
+    function formatTimeToJP(ts) {
+      if (!ts) return "-";
+      const d = new Date(ts);
+      if (isNaN(d)) return ts;
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      return `${yyyy}/${mm}/${dd} ${hh}:${mi}時点`;
+    }
+
+    async function fetchLatest(){
+      statusEl.textContent = "読み込み中…";
+      try{
+        const url = `${API_BASE}/api/latest?user_id=${encodeURIComponent(USER_ID)}&fields=${encodeURIComponent(FIELDS)}&time_range=${encodeURIComponent(RANGE)}`;
+        const res = await fetch(url);
+        if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const json = await res.json();
+
+        tsEl.textContent  = formatTimeToJP(json.timestamp);
+
+        const data = json.data || {};
+        if (data.temperature_c != null) tempV.textContent = Number(data.temperature_c).toFixed(1);
+        else tempV.textContent = "—";
+        if (data.humidity_percent != null) humiV.textContent = Math.round(Number(data.humidity_percent));
+        else humiV.textContent = "—";
+        if (data.altitude_m != null) altV.textContent = Number(data.altitude_m).toFixed(1);
+        else altV.textContent = "—";
+
+        statusEl.textContent = "OK";
+      }catch(e){
+        statusEl.textContent = "エラー: " + e.message;
+        tempV.textContent = humiV.textContent = altV.textContent = "—";
+      }
+    }
+
+    /* ===== ミニ音声アシスタント ===== */
+    const assistantBtn = document.getElementById("assistant-btn");
+    const assistantStatus = document.getElementById("assistant-status");
+    const assistantReply = document.getElementById("assistant-reply");
+    const assistantAudio = document.getElementById("assistant-audio");
+
+    const vadConfig = {
+      threshold: 0.015,
+      minSpeechMs: 200,
+      minSilenceMs: 700,
+    };
+    const vadState = {
+      active: false,
+      speechMs: 0,
+      silenceMs: 0,
+      frameMs: 0,
+      triggered: false,
+    };
+
+    const recorderState = {
+      recording: false,
+      stopping: false,
+      buffers: [],
+      audioContext: null,
+      processor: null,
+      source: null,
+      stream: null,
+      sampleRate: 16000,
+    };
+
+    function resetAssistantUI(){
+      assistantBtn.disabled = false;
+      assistantBtn.textContent = "話しかける";
+    }
+
+    function resetVadState(){
+      vadState.active = false;
+      vadState.triggered = false;
+      vadState.speechMs = 0;
+      vadState.silenceMs = 0;
+    }
+
+    function cleanupRecordingNodes(){
+      if (recorderState.processor){
+        recorderState.processor.disconnect();
+        recorderState.processor.onaudioprocess = null;
+      }
+      if (recorderState.source){
+        recorderState.source.disconnect();
+      }
+      if (recorderState.stream){
+        recorderState.stream.getTracks().forEach((track)=>track.stop());
+      }
+      if (recorderState.audioContext){
+        recorderState.audioContext.close();
+      }
+      recorderState.processor = null;
+      recorderState.source = null;
+      recorderState.stream = null;
+      recorderState.audioContext = null;
+      resetVadState();
+    }
+
+    function mergeBuffers(buffers){
+      const totalLength = buffers.reduce((sum, buf)=>sum + buf.length, 0);
+      const result = new Float32Array(totalLength);
+      let offset = 0;
+      for (const buf of buffers){
+        result.set(buf, offset);
+        offset += buf.length;
+      }
+      return result;
+    }
+
+    function floatTo16BitPCM(float32Array){
+      const buffer = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buffer);
+      for (let i = 0; i < float32Array.length; i++){
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return buffer;
+    }
+
+    function encodeWav(samples, sampleRate){
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+
+      function writeString(offset, string){
+        for (let i = 0; i < string.length; i++){
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      }
+
+      const pcmBuffer = floatTo16BitPCM(samples);
+
+      writeString(0, "RIFF");
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeString(8, "WAVE");
+      writeString(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(36, "data");
+      view.setUint32(40, samples.length * 2, true);
+
+      const wavBytes = new Uint8Array(buffer);
+      wavBytes.set(new Uint8Array(pcmBuffer), 44);
+      return new Blob([wavBytes], { type: "audio/wav" });
+    }
+
+    async function uploadAssistantAudio(blob){
+      const formData = new FormData();
+      formData.append("file", blob, "recording.wav");
+      assistantStatus.textContent = "サーバーへ送信中…";
+      try{
+        const res = await fetch(`${API_BASE}/api/assistant/talk`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok){
+          const msg = await res.text();
+          throw new Error(msg || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        assistantStatus.textContent = data.message || "完了";
+        assistantReply.textContent = data.reply || "(応答なし)";
+        if (data.audio_base64){
+          assistantAudio.hidden = false;
+          assistantAudio.src = `data:${data.audio_mime || "audio/wav"};base64,${data.audio_base64}`;
+          const playPromise = assistantAudio.play();
+          if (playPromise){
+            playPromise.catch(()=>{});
+          }
+        }else{
+          assistantAudio.hidden = true;
+          assistantAudio.removeAttribute("src");
+        }
+      }catch(err){
+        assistantStatus.textContent = "エラー: " + err.message;
+      }
+    }
+
+    async function stopAssistantRecording(autoStop = false){
+      if (!recorderState.recording || recorderState.stopping){
+        return;
+      }
+      recorderState.recording = false;
+      recorderState.stopping = true;
+      assistantBtn.disabled = true;
+      assistantBtn.textContent = autoStop ? "自動停止中…" : "処理中…";
+      cleanupRecordingNodes();
+      const merged = mergeBuffers(recorderState.buffers);
+      recorderState.buffers = [];
+      if (!merged.length){
+        assistantStatus.textContent = "録音が短すぎました。再度お試しください。";
+        resetAssistantUI();
+        recorderState.stopping = false;
+        return;
+      }
+      const wavBlob = encodeWav(merged, recorderState.sampleRate);
+      await uploadAssistantAudio(wavBlob);
+      resetAssistantUI();
+      recorderState.stopping = false;
+    }
+
+    async function startAssistantRecording(){
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        recorderState.stream = stream;
+        recorderState.audioContext = audioContext;
+        recorderState.source = source;
+        recorderState.processor = processor;
+        recorderState.sampleRate = audioContext.sampleRate;
+        recorderState.buffers = [];
+        vadState.frameMs = (processor.bufferSize / recorderState.sampleRate) * 1000;
+        resetVadState();
+        processor.onaudioprocess = (event)=>{
+          const channelData = event.inputBuffer.getChannelData(0);
+          recorderState.buffers.push(new Float32Array(channelData));
+          let sumSquares = 0;
+          for (let i = 0; i < channelData.length; i += 1){
+            const sample = channelData[i];
+            sumSquares += sample * sample;
+          }
+          const rms = Math.sqrt(sumSquares / channelData.length);
+          const isSpeech = rms >= vadConfig.threshold;
+          if (isSpeech){
+            vadState.speechMs += vadState.frameMs;
+            vadState.silenceMs = 0;
+            if (!vadState.triggered && vadState.speechMs >= vadConfig.minSpeechMs){
+              vadState.triggered = true;
+              assistantStatus.textContent = "音声検出: 話し続けてください。";
+            }
+          } else if (vadState.triggered){
+            vadState.silenceMs += vadState.frameMs;
+            if (vadState.silenceMs >= vadConfig.minSilenceMs){
+              vadState.triggered = false;
+              assistantStatus.textContent = "無音検出: 送信します…";
+              void stopAssistantRecording(true);
+            }
+          }
+        };
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        recorderState.recording = true;
+        assistantBtn.textContent = "録音停止";
+        assistantStatus.textContent = "録音中… もう一度ボタンを押すと送信します。";
+        assistantReply.textContent = "-";
+        assistantAudio.hidden = true;
+        assistantAudio.removeAttribute("src");
+        assistantBtn.disabled = false;
+      }catch(err){
+        assistantStatus.textContent = "マイク取得に失敗: " + err.message;
+        resetAssistantUI();
+      }
+    }
+
+    if (assistantBtn){
+      if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){
+        assistantBtn.disabled = true;
+        assistantStatus.textContent = "このブラウザではマイクを利用できません。";
+      }
+      assistantBtn.addEventListener("click", async ()=>{
+        if (!recorderState.recording){
+          assistantBtn.disabled = true;
+          assistantBtn.textContent = "マイク接続中…";
+          await startAssistantRecording();
+        }else{
+          await stopAssistantRecording(false);
+        }
+      });
+    }
+
+    document.addEventListener("DOMContentLoaded", ()=>{
+      fetchWeather(); fetchLatest(); fetchGps();
+      window._timer_sensor  = setInterval(fetchLatest, 30_000);
+      window._timer_weather = setInterval(fetchWeather, 300_000);
+      window._timer_gps     = setInterval(fetchGps, 60_000);
+    });
+  </script>
+</body>
+</html>

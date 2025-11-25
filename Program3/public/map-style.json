@@ -1,0 +1,23 @@
+{
+  "version": 8,
+  "name": "Local Raster",
+  "sources": {
+    "raster-tiles": {
+      "type": "raster",
+      "tiles": [
+        "/tiles/{z}/{x}/{y}.png"
+      ],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap contributors"
+    }
+  },
+  "layers": [
+    {
+      "id": "base-raster",
+      "type": "raster",
+      "source": "raster-tiles",
+      "minzoom": 0,
+      "maxzoom": 22
+    }
+  ]
+}

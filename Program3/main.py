@@ -6,9 +6,10 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,6 +58,12 @@ ASSISTANT_TEMPERATURE = float(os.getenv("ASSISTANT_TEMPERATURE", "0.3"))
 
 AIVIS_BASE = os.getenv("AIVIS_BASE", "http://localhost:10102")
 AIVIS_SPEAKER = int(os.getenv("AIVIS_SPEAKER", "888753760"))
+
+WEATHER_ENABLED = os.getenv("WEATHER_ENABLED", "1").lower() not in {"0", "false", "off"}
+WEATHER_LAT = float(os.getenv("WEATHER_LAT", "35.339"))  # 藤沢市近傍
+WEATHER_LON = float(os.getenv("WEATHER_LON", "139.49"))
+WEATHER_API_URL = os.getenv("WEATHER_API_URL", "https://api.open-meteo.com/v1/forecast")
+WEATHER_POLL_SECONDS = int(os.getenv("WEATHER_POLL_SECONDS", "600"))  # 10 分おきに更新
 
 app = FastAPI(title="Local Metrics API")
 
@@ -164,7 +171,7 @@ class AssistantPipeline:
     SYSTEM_PROMPT = (
         "あなたは丁寧な日本語アシスタントです。ユーザーの発話を踏まえて、"
         "事実に基づいた返答を1〜2文で簡潔に返してください。"
-        "ユーザが近くの道路状況について尋ねた場合は、付近に危険な状態の道路の記録はありませんと答えてください。"
+        "ユーザが近くの道路状況について尋ねた場合は、天気の情報を加味して大丈夫そうかを答えてください。"
     )
 
     def __init__(self) -> None:
@@ -203,10 +210,21 @@ class AssistantPipeline:
         return payload
 
     async def _generate_reply(self, transcript: str) -> str:
-        messages = [
-            SystemMessage(content=self.SYSTEM_PROMPT),
-            HumanMessage(content=transcript),
-        ]
+        messages = [SystemMessage(content=self.SYSTEM_PROMPT)]
+
+        weather_ctx = get_weather_context()
+        if weather_ctx:
+            messages.append(
+                SystemMessage(
+                    content=(
+                        "天気や路面状況に関する質問には、次のスナップショットを根拠に必ず答えてください。"
+                        "天気以外の話題ではこの情報を挿入しないでください。\n"
+                        f"{weather_ctx}"
+                    )
+                )
+            )
+
+        messages.append(HumanMessage(content=transcript))
         response = await asyncio.to_thread(self.llm.invoke, messages)
         return response.content.strip()
 
@@ -217,6 +235,134 @@ class AssistantPipeline:
 
 
 assistant_pipeline: Optional[AssistantPipeline] = None
+weather_snapshot: Optional[str] = None
+weather_updated_at: Optional[str] = None
+weather_lock = asyncio.Lock()
+
+
+# ===== 天気スナップショット (藤沢市 直近1時間) =====
+def _describe_weather_code(code: int) -> str:
+    mapping = {
+        0: "快晴",
+        1: "ほぼ快晴",
+        2: "薄曇り",
+        3: "曇り",
+        45: "霧",
+        48: "霧（霧氷）",
+        51: "霧雨（弱い）",
+        53: "霧雨（中）",
+        55: "霧雨（強い）",
+        56: "着氷霧雨（弱い）",
+        57: "着氷霧雨（強い）",
+        61: "雨（弱い）",
+        63: "雨（中）",
+        65: "雨（強い）",
+        66: "着氷雨（弱い）",
+        67: "着氷雨（強い）",
+        71: "雪（弱い）",
+        73: "雪（中）",
+        75: "雪（強い）",
+        77: "雪の粒",
+        80: "にわか雨（弱い）",
+        81: "にわか雨（中）",
+        82: "にわか雨（強い）",
+        85: "にわか雪（弱い）",
+        86: "にわか雪（強い）",
+        95: "雷雨（弱〜中）",
+        96: "雷雨（ひょうを伴う弱〜中）",
+        99: "雷雨（ひょうを伴う強い）",
+    }
+    return mapping.get(int(code), f"不明な天気コード({code})")
+
+
+def _build_weather_summary(payload: Dict[str, Any]) -> Tuple[str, str]:
+    """Return (summary, time_iso)."""
+    hourly = payload.get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        raise ValueError("hourly time is missing")
+    idx = 0  # 直近1時間のみを使う
+    time_iso = times[idx]
+    code = (hourly.get("weathercode") or [None])[idx]
+    temp = (hourly.get("temperature_2m") or [None])[idx]
+    precip = (hourly.get("precipitation") or [0])[idx] or 0
+    rain = (hourly.get("rain") or [0])[idx] or 0
+    showers = (hourly.get("showers") or [0])[idx] or 0
+    snow = (hourly.get("snowfall") or [0])[idx] or 0
+    wind = (hourly.get("windspeed_10m") or [None])[idx]
+    direction = (hourly.get("winddirection_10m") or [None])[idx]
+
+    code_desc = _describe_weather_code(code if code is not None else -1)
+    time_obj = datetime.fromisoformat(time_iso)
+    if time_obj.tzinfo is None:
+        time_obj = time_obj.replace(tzinfo=timezone.utc)
+    time_obj = time_obj.astimezone()
+    hhmm = time_obj.strftime("%H:%M")
+
+    precip_mm = float(precip)
+    rain_mm = float(rain)
+    showers_mm = float(showers)
+    snow_mm = float(snow)
+    wetness = precip_mm + rain_mm + showers_mm + snow_mm
+    if wetness > 0.1:
+        road = "雨で路面が濡れている可能性があります。速度に注意してください。"
+    elif code in {71, 73, 75, 77, 85, 86}:
+        road = "雪の恐れがあります。滑りやすい路面に注意してください。"
+    elif code in {45, 48}:
+        road = "霧で視界が悪いかもしれません。"
+    else:
+        road = "路面はおおむね乾いていて走行しやすそうです。"
+
+    temp_text = f"{temp:.1f}℃" if temp is not None else "N/A"
+    wind_text = f"{wind:.1f}m/s" if wind is not None else "不明"
+    dir_text = f"{int(direction)}°" if direction is not None else "不明"
+    summary = (
+        f"藤沢市の直近1時間予報（{hhmm}頃まで）: {code_desc}, 気温 {temp_text}, "
+        f"降水量 {precip_mm:.1f}mm, 風速 {wind_text} (方角 {dir_text})。路面: {road}"
+    )
+    return summary, time_iso
+
+
+async def fetch_weather_once() -> Tuple[str, str]:
+    params = {
+        "latitude": WEATHER_LAT,
+        "longitude": WEATHER_LON,
+        "hourly": ",".join([
+            "temperature_2m",
+            "precipitation",
+            "rain",
+            "showers",
+            "snowfall",
+            "weathercode",
+            "windspeed_10m",
+            "winddirection_10m",
+        ]),
+        "forecast_days": 1,
+        "timezone": "Asia/Tokyo",
+    }
+    resp = requests.get(WEATHER_API_URL, params=params, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    return _build_weather_summary(data)
+
+
+async def refresh_weather_periodically() -> None:
+    global weather_snapshot, weather_updated_at
+    while True:
+        try:
+            summary, ts = await fetch_weather_once()
+            async with weather_lock:
+                weather_snapshot = summary
+                weather_updated_at = ts
+        except Exception as exc:  # noqa: BLE001
+            # ログだけ残して次回に再試行
+            print(f"[weather] fetch failed: {exc}")
+        await asyncio.sleep(max(60, WEATHER_POLL_SECONDS))
+
+
+def get_weather_context() -> Optional[str]:
+    """Return latest weather snapshot text."""
+    return weather_snapshot
 
 
 @app.on_event("startup")
@@ -231,6 +377,10 @@ async def init_assistant() -> None:
     except Exception as exc:  # noqa: BLE001
         assistant_pipeline = None
         print(f"[assistant] initialization failed: {exc}")
+
+    if WEATHER_ENABLED:
+        asyncio.create_task(refresh_weather_periodically())
+        print("[weather] updater started")
 
 def build_flux_query(bucket: str, time_range: str, user_id: str,
                      measurement: str, fields: Optional[List[str]]):

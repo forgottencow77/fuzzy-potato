@@ -140,6 +140,44 @@
     width:100%;
   }
 
+  /* ===== フローティング操作バー（モバイル） ===== */
+  .assistant-fab{
+    position:fixed;
+    left:12px; right:12px;
+    bottom: calc(env(safe-area-inset-bottom, 0) + 12px);
+    display:none;
+    gap:8px;
+    align-items:center;
+    justify-content:space-between;
+    padding:10px 12px;
+    background:rgba(18,18,18,0.92);
+    border:1px solid var(--border);
+    border-radius:16px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.35);
+    z-index:999;
+  }
+  .assistant-fab-btn{
+    flex:1 1 auto;
+    border:none;
+    border-radius:12px;
+    padding:12px;
+    font-size:1rem;
+    font-weight:700;
+    background:var(--accent);
+    color:#000;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .assistant-fab-btn:disabled{ opacity:0.6; cursor:not-allowed; }
+  .assistant-fab-status{ color:var(--muted); font-size:0.85rem; padding-left:10px; }
+
+  /* スマホ縦長でFABを表示、デスクトップでは非表示 */
+  @media (max-width: 820px){
+    .assistant-fab{ display:flex; }
+    /* 右カラムが下に落ちても最低限操作できるようにマージンを確保 */
+    body{ padding-bottom:96px; }
+  }
+
   /* ======== landscape（横向き）で左右カードを小さく＆正方形 ======== */
   @media (orientation: landscape){
     /* 1画面に収める（スクロール禁止 & 安全領域考慮） */
@@ -267,12 +305,18 @@
       <div id="status" class="muted" style="text-align:center;">読み込み中…</div>
       <div class="assistant-box">
         <div class="title" style="font-size:0.9rem;">ミニ音声アシスタント</div>
-        <button id="assistant-btn">話しかける</button>
+        <button id="assistant-btn" data-assistant-btn>話しかける</button>
         <div id="assistant-status" class="muted">ボタンを押して録音を開始します。</div>
         <div id="assistant-reply" class="assistant-reply">-</div>
-        <audio id="assistant-audio" controls playsinline hidden></audio>
+        <audio id="assistant-audio" controls playsinline hidden autoplay></audio>
       </div>
     </aside>
+  </div>
+
+  <!-- モバイル向けフローティング操作バー（画面下部に常時表示） -->
+  <div class="assistant-fab" id="assistant-fab">
+    <button class="assistant-fab-btn" data-assistant-btn aria-label="音声アシスタントを開始">🎙️ 話しかける</button>
+    <div class="assistant-fab-status" id="assistant-status-mini">待機中</div>
   </div>
 
   <script
@@ -523,10 +567,16 @@
     }
 
     /* ===== ミニ音声アシスタント ===== */
-    const assistantBtn = document.getElementById("assistant-btn");
-    const assistantStatus = document.getElementById("assistant-status");
+    const assistantBtns = Array.from(document.querySelectorAll('[data-assistant-btn]'));
+    const assistantStatusMain = document.getElementById("assistant-status");
+    const assistantStatusMini = document.getElementById("assistant-status-mini");
     const assistantReply = document.getElementById("assistant-reply");
     const assistantAudio = document.getElementById("assistant-audio");
+
+    function setAssistantStatus(msg){
+      if (assistantStatusMain) assistantStatusMain.textContent = msg;
+      if (assistantStatusMini) assistantStatusMini.textContent = msg;
+    }
 
     const vadConfig = {
       threshold: 0.015,
@@ -552,9 +602,15 @@
       sampleRate: 16000,
     };
 
+    function setAssistantButtons(text, disabled){
+      assistantBtns.forEach(btn => {
+        btn.textContent = text;
+        btn.disabled = disabled;
+      });
+    }
+
     function resetAssistantUI(){
-      assistantBtn.disabled = false;
-      assistantBtn.textContent = "話しかける";
+      setAssistantButtons("話しかける", false);
     }
 
     function resetVadState(){
@@ -640,7 +696,7 @@
     async function uploadAssistantAudio(blob){
       const formData = new FormData();
       formData.append("file", blob, "recording.wav");
-      assistantStatus.textContent = "サーバーへ送信中…";
+      setAssistantStatus("サーバーへ送信中…");
       try{
         const res = await fetch(`${API_BASE}/api/assistant/talk`, {
           method: "POST",
@@ -651,21 +707,29 @@
           throw new Error(msg || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        assistantStatus.textContent = data.message || "完了";
+        setAssistantStatus(data.message || "完了");
         assistantReply.textContent = data.reply || "(応答なし)";
         if (data.audio_base64){
+          const dataUrl = `data:${data.audio_mime || "audio/wav"};base64,${data.audio_base64}`;
           assistantAudio.hidden = false;
-          assistantAudio.src = `data:${data.audio_mime || "audio/wav"};base64,${data.audio_base64}`;
+          assistantAudio.src = dataUrl;
+          assistantAudio.autoplay = true;
           const playPromise = assistantAudio.play();
           if (playPromise){
-            playPromise.catch(()=>{});
+            playPromise.catch(() => {
+              // ブラウザの自動再生ブロックを回避するため一瞬ミュート再生を試す
+              assistantAudio.muted = true;
+              assistantAudio.play().then(() => {
+                setTimeout(() => { assistantAudio.muted = false; }, 150);
+              }).catch(()=>{});
+            });
           }
         }else{
           assistantAudio.hidden = true;
           assistantAudio.removeAttribute("src");
         }
       }catch(err){
-        assistantStatus.textContent = "エラー: " + err.message;
+        setAssistantStatus("エラー: " + err.message);
       }
     }
 
@@ -675,13 +739,12 @@
       }
       recorderState.recording = false;
       recorderState.stopping = true;
-      assistantBtn.disabled = true;
-      assistantBtn.textContent = autoStop ? "自動停止中…" : "処理中…";
+      setAssistantButtons(autoStop ? "自動停止中…" : "処理中…", true);
       cleanupRecordingNodes();
       const merged = mergeBuffers(recorderState.buffers);
       recorderState.buffers = [];
       if (!merged.length){
-        assistantStatus.textContent = "録音が短すぎました。再度お試しください。";
+        setAssistantStatus("録音が短すぎました。再度お試しください。");
         resetAssistantUI();
         recorderState.stopping = false;
         return;
@@ -721,13 +784,13 @@
             vadState.silenceMs = 0;
             if (!vadState.triggered && vadState.speechMs >= vadConfig.minSpeechMs){
               vadState.triggered = true;
-              assistantStatus.textContent = "音声検出: 話し続けてください。";
+              setAssistantStatus("音声検出: 話し続けてください。");
             }
           } else if (vadState.triggered){
             vadState.silenceMs += vadState.frameMs;
             if (vadState.silenceMs >= vadConfig.minSilenceMs){
               vadState.triggered = false;
-              assistantStatus.textContent = "無音検出: 送信します…";
+              setAssistantStatus("無音検出: 送信します…");
               void stopAssistantRecording(true);
             }
           }
@@ -735,31 +798,32 @@
         source.connect(processor);
         processor.connect(audioContext.destination);
         recorderState.recording = true;
-        assistantBtn.textContent = "録音停止";
-        assistantStatus.textContent = "録音中… もう一度ボタンを押すと送信します。";
+        setAssistantButtons("録音停止", false);
+        setAssistantStatus("録音中… もう一度ボタンを押すと送信します。");
         assistantReply.textContent = "-";
         assistantAudio.hidden = true;
         assistantAudio.removeAttribute("src");
-        assistantBtn.disabled = false;
+        setAssistantButtons("録音停止", false);
       }catch(err){
-        assistantStatus.textContent = "マイク取得に失敗: " + err.message;
+        setAssistantStatus("マイク取得に失敗: " + err.message);
         resetAssistantUI();
       }
     }
 
-    if (assistantBtn){
+    if (assistantBtns.length){
       if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){
-        assistantBtn.disabled = true;
-        assistantStatus.textContent = "このブラウザではマイクを利用できません。";
+        setAssistantButtons("利用不可", true);
+        setAssistantStatus("このブラウザではマイクを利用できません。");
       }
-      assistantBtn.addEventListener("click", async ()=>{
-        if (!recorderState.recording){
-          assistantBtn.disabled = true;
-          assistantBtn.textContent = "マイク接続中…";
-          await startAssistantRecording();
-        }else{
-          await stopAssistantRecording(false);
-        }
+      assistantBtns.forEach(btn => {
+        btn.addEventListener("click", async ()=>{
+          if (!recorderState.recording){
+            setAssistantButtons("マイク接続中…", true);
+            await startAssistantRecording();
+          }else{
+            await stopAssistantRecording(false);
+          }
+        });
       });
     }
 

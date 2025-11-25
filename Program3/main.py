@@ -55,7 +55,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "ollama")
 ASSISTANT_LLM_MODEL = os.getenv("ASSISTANT_LLM_MODEL", "hf.co/alfredplpl/gemma-2-2b-jpn-it-gguf")
 ASSISTANT_TEMPERATURE = float(os.getenv("ASSISTANT_TEMPERATURE", "0.3"))
 
-AIVIS_BASE = os.getenv("AIVIS_BASE", "http://localhost:10101")
+AIVIS_BASE = os.getenv("AIVIS_BASE", "http://localhost:10102")
 AIVIS_SPEAKER = int(os.getenv("AIVIS_SPEAKER", "888753760"))
 
 app = FastAPI(title="Local Metrics API")

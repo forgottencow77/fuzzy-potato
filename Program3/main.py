@@ -45,6 +45,7 @@ ENABLE_ASSISTANT = os.getenv("ENABLE_ASSISTANT", "1").lower() not in {"0", "fals
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" をデフォルトにして GPU 未整備環境でのクラッシュを防止
 STT_REMOTE_URL = os.getenv("STT_REMOTE_URL")
 STT_REMOTE_API_KEY = os.getenv("STT_REMOTE_API_KEY")
 STT_REMOTE_MODEL = os.getenv("STT_REMOTE_MODEL", WHISPER_MODEL)
@@ -101,7 +102,13 @@ class FasterWhisperBackend(SpeechToTextBackend):
                 "or set STT_REMOTE_URL to use a remote transcription API."
             )
         self.language = language
-        self.model = WhisperModel(model_name, compute_type=compute_type)
+        # GPU ライブラリ（cuDNN）が無い環境で自動で GPU を掴むとプロセスごと落ちることがある。
+        # 明示的にデバイスを指定し、CPU の場合は CT2_FORCE_CPU を設定して CUDA ロードを抑止する。
+        device = os.getenv("WHISPER_DEVICE", "cpu")
+        if device.lower() == "cpu":
+            os.environ.setdefault("CT2_FORCE_CPU", "1")
+            os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
 
     def transcribe(self, audio_path: str) -> str:
         segments, _ = self.model.transcribe(audio_path, beam_size=1, language=self.language)

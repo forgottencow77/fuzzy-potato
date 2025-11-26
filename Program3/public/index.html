@@ -317,7 +317,8 @@
     const MAP_ANIMATION_MS = 600;
     const HAZARD_THRESHOLD_M = 150; // 接近判定
     const HAZARDS = [
-      { name: "注意ポイント", lat: 35.38992744781368, lon: 139.4315005656078 },
+      { name: "注意ポイント", kind: "地割れ", lat: 35.38992744781368, lon: 139.4315005656078 },
+      { name: "注意ポイント", kind: "地割れ", lat: 35.387701010615224, lon: 139.425606188171 },
     ];
 
     /* ▼▼▼ 神奈川県藤沢市をデフォルト位置に設定 ▼▼▼ */
@@ -580,7 +581,7 @@
     let lastWarningAt = 0;
     let serverStatusText = "";
     let deviceStatusText = "";
-    let lastAlert = { hazard: null, inside: false, ts: 0 };
+    let lastAlert = { hazard: null, kind: null, inside: false, ts: 0 };
 
     function formatTimeToJP(ts) {
       if (!ts) return "-";
@@ -631,13 +632,15 @@
         return;
       }
       if (minDist <= HAZARD_THRESHOLD_M){
-        const text = `⚠️ ${nearest.name} まで約 ${Math.round(minDist)}m: 減速し安全を確保してください`;
+        const text = `⚠️ ${nearest.name} (${nearest.kind}) まで約 ${Math.round(minDist)}m: 減速し安全を確保してください`;
         alertStatus.textContent = text;
         if (!lastAlert.inside || lastAlert.hazard !== nearest.name){
           lastAlert.inside = true;
           lastAlert.hazard = nearest.name;
+          lastAlert.kind = nearest.kind;
           lastAlert.ts = Date.now();
-          playWarningTts("この先の路面に危険ポイントがあります。注意してお進みください。");
+          listenerReply.textContent = text;
+          playWarningTts(`警告: ${nearest.kind} の危険ポイントが前方にあります。注意してお進みください。`);
         }
       }else{
         alertStatus.textContent = "";

@@ -73,6 +73,12 @@
     overflow:hidden;
   }
   #map-status{ text-align:center; }
+  #alert-status{
+    text-align:center;
+    color:#ffb347;
+    font-weight:700;
+    min-height:1.2em;
+  }
   .datetime{
     display:flex;
     flex-direction:column;
@@ -271,6 +277,7 @@
       <div class="map-wrapper">
         <div id="map"></div>
         <div id="map-status" class="muted">GPS読み込み中…</div>
+        <div id="alert-status"></div>
       </div>
     </main>
 
@@ -308,6 +315,10 @@
     const GPS_FIELDS = "latitude,longitude";
     const GPS_RANGE  = "-1h";
     const MAP_ANIMATION_MS = 600;
+    const HAZARD_THRESHOLD_M = 150; // 接近判定
+    const HAZARDS = [
+      { name: "注意ポイント", lat: 35.38992744781368, lon: 139.4315005656078 },
+    ];
 
     /* ▼▼▼ 神奈川県藤沢市をデフォルト位置に設定 ▼▼▼ */
     const FUJISAWA = { lat: 35.3389, lon: 139.4913 };
@@ -426,13 +437,13 @@
 
     function createMap(lngLat){
       const center = ol.proj.fromLonLat(lngLat);
-      markerLayer = new ol.layer.Vector({
-        source: new ol.source.Vector(),
-      });
+      markerLayer = new ol.layer.Vector({ source: new ol.source.Vector() });
+      hazardLayer = new ol.layer.Vector({ source: new ol.source.Vector() });
       mapInstance = new ol.Map({
         target: mapEl,
         layers: [
           new ol.layer.Tile({ source: new ol.source.OSM() }),
+          hazardLayer,
           markerLayer,
         ],
         view: new ol.View({
@@ -447,6 +458,13 @@
       markerStyle = ensureMarkerStyle("#00bfff", "#083150");
       markerFeature.setStyle(markerStyle);
       markerLayer.getSource().addFeature(markerFeature);
+      // 危険地点ピン（赤）
+      hazardStyle = ensureMarkerStyle("#ff5252", "#7a0e0e");
+      HAZARDS.forEach(h => {
+        const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([h.lon, h.lat])) });
+        f.setStyle(hazardStyle);
+        hazardLayer.getSource().addFeature(f);
+      });
     }
 
     function updateMapView(lat, lon){
@@ -472,6 +490,7 @@
       }else{
         markerFeature.getGeometry().setCoordinates(coords);
       }
+      updateAlert(lat, lon);
     }
 
     function updateDeviceMarker(lat, lon){
@@ -490,6 +509,7 @@
       if (mapInstance){
         mapInstance.getView().animate({ center: coords, duration: MAP_ANIMATION_MS });
       }
+      updateAlert(lat, lon);
     }
 
     /* 端末のGPSを監視してマップと同期 */
@@ -548,14 +568,19 @@
     const altV     = document.getElementById("alt-v");
     const mapEl    = document.getElementById("map");
     const mapStatus = document.getElementById("map-status");
+    const alertStatus = document.getElementById("alert-status");
     let mapInstance = null;
     let markerLayer = null;
     let markerFeature = null;       // サーバー側の最新位置
     let markerStyle = null;
     let deviceMarkerFeature = null; // 端末の現在地
     let deviceMarkerStyle = null;
+    let hazardLayer = null;
+    let hazardStyle = null;
+    let lastWarningAt = 0;
     let serverStatusText = "";
     let deviceStatusText = "";
+    let lastAlert = { hazard: null, inside: false, ts: 0 };
 
     function formatTimeToJP(ts) {
       if (!ts) return "-";
@@ -582,6 +607,63 @@
       if (deviceStatusText) items.push(deviceStatusText);
       if (serverStatusText) items.push(serverStatusText);
       mapStatus.textContent = items.join(" | ") || "位置情報待機中…";
+    }
+    function haversineMeters(lat1, lon1, lat2, lon2){
+      const R = 6371000; // m
+      const toRad = (d)=>d*Math.PI/180;
+      const dLat = toRad(lat2-lat1);
+      const dLon = toRad(lon2-lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+      const c = 2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+    function updateAlert(lat, lon){
+      if (!alertStatus) return;
+      let nearest = null;
+      let minDist = Infinity;
+      HAZARDS.forEach(h=>{
+        const d = haversineMeters(lat, lon, h.lat, h.lon);
+        if (d < minDist){ minDist = d; nearest = h; }
+      });
+      if (!nearest){
+        alertStatus.textContent = "";
+        lastAlert.inside = false;
+        return;
+      }
+      if (minDist <= HAZARD_THRESHOLD_M){
+        const text = `⚠️ ${nearest.name} まで約 ${Math.round(minDist)}m: 減速し安全を確保してください`;
+        alertStatus.textContent = text;
+        if (!lastAlert.inside || lastAlert.hazard !== nearest.name){
+          lastAlert.inside = true;
+          lastAlert.hazard = nearest.name;
+          lastAlert.ts = Date.now();
+          playWarningTts("この先の路面に危険ポイントがあります。注意してお進みください。");
+        }
+      }else{
+        alertStatus.textContent = "";
+        lastAlert.inside = false;
+      }
+    }
+    async function playWarningTts(text){
+      const now = Date.now();
+      if (now - lastWarningAt < 20_000) return; // 20秒以内の連続再生を抑制
+      lastWarningAt = now;
+      try{
+        const res = await fetch(`${API_BASE}/api/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+        const data = await res.json();
+        if (!data.audio_base64) throw new Error("audio missing");
+        const url = `data:${data.audio_mime || "audio/wav"};base64,${data.audio_base64}`;
+        assistantAudio.hidden = false;
+        assistantAudio.src = url;
+        await assistantAudio.play();
+      }catch(err){
+        console.warn("warning tts failed", err);
+      }
     }
 
     async function fetchLatest(){

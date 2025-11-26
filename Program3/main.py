@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -637,6 +638,29 @@ async def assistant_talk(file: UploadFile = File(...)) -> Dict[str, Any]:
             tmp_path.unlink(missing_ok=True)
         except Exception:  # pragma: no cover - best effort cleanup
             pass
+
+
+class TtsRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/tts")
+async def tts_endpoint(payload: TtsRequest = Body(...)) -> Dict[str, Any]:
+    """Synthesize speech for arbitrary text using AIVIS TTS if available."""
+    if not assistant_pipeline or not assistant_pipeline.tts:
+        raise HTTPException(status_code=503, detail="TTS is not available")
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        audio_bytes = await asyncio.to_thread(assistant_pipeline.tts.tts, text)
+        return {
+            "status": "ok",
+            "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+            "audio_mime": "audio/wav",
+        }
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"TTS failed: {exc}") from exc
 
 # ===== 静的ファイル（フロントエンド）を同一オリジンで配信 =====
 # このファイルと同じディレクトリに public/ を作り、そこへ index.html を置く

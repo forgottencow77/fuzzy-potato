@@ -132,6 +132,18 @@
   .listener-btn.is-off{ background:#f05454; box-shadow:0 6px 12px rgba(240,84,84,0.35); }
   .listener-btn.is-on { background:#1bd760; box-shadow:0 6px 12px rgba(27,215,96,0.35); }
   .listener-btn:hover{ transform: translateY(-1px); }
+  .playback-btn{
+    width:44px; height:44px;
+    border-radius:12px;
+    border:1px solid var(--border);
+    background:var(--panel);
+    color:#f5f5f5;
+    font-size:1.1rem;
+    cursor:pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  }
+  .playback-btn:hover{ transform: translateY(-1px); background:#222; box-shadow:0 6px 14px rgba(0,0,0,0.35); }
+  .playback-btn:active{ transform: translateY(0); }
   .listener-text{ display:flex; flex-direction:column; gap:4px; }
   .listener-status{ color:var(--muted); font-size:0.9rem; }
   .listener-reply{ color:var(--fg); font-size:0.95rem; min-height:1.2em; max-width:52vw; }
@@ -139,6 +151,7 @@
   /* スマホ幅で少し大きめにタップしやすく */
   @media (max-width: 820px){
     .listener-btn{ width:64px; height:64px; font-size:1.5rem; }
+    .playback-btn{ width:52px; height:52px; font-size:1.2rem; }
     .listener-reply{ max-width:68vw; }
     body{ padding-bottom:120px; }
   }
@@ -274,6 +287,7 @@
   <!-- 常時リッスン用フローティングコントロール -->
   <div class="listener-widget" id="listener-widget">
     <button id="listener-btn" class="listener-btn is-off" aria-label="音声リッスン切替">🎙️</button>
+    <button id="playback-btn" class="playback-btn" aria-label="直近の返答を再生">🔈</button>
     <div class="listener-text">
       <div id="listener-status" class="listener-status">停止中</div>
       <div id="listener-reply" class="listener-reply">-</div>
@@ -399,16 +413,15 @@
     }
 
     /* ===== マップ（GPS座標） ===== */
-    function ensureMarkerStyle(){
-      if (!window.ol || markerStyle) return markerStyle;
-      markerStyle = new ol.style.Style({
+    function ensureMarkerStyle(color="#00bfff", stroke="#083150"){
+      if (!window.ol) return null;
+      return new ol.style.Style({
         image: new ol.style.Circle({
           radius: 8,
-          fill: new ol.style.Fill({ color: "#00bfff" }),
-          stroke: new ol.style.Stroke({ color: "#083150", width: 2 }),
+          fill: new ol.style.Fill({ color }),
+          stroke: new ol.style.Stroke({ color: stroke, width: 2 }),
         }),
       });
-      return markerStyle;
     }
 
     function createMap(lngLat){
@@ -431,7 +444,8 @@
         controls: ol.control.defaults.defaults({ attribution: true }),
       });
       markerFeature = new ol.Feature({ geometry: new ol.geom.Point(center) });
-      markerFeature.setStyle(ensureMarkerStyle());
+      markerStyle = ensureMarkerStyle("#00bfff", "#083150");
+      markerFeature.setStyle(markerStyle);
       markerLayer.getSource().addFeature(markerFeature);
     }
 
@@ -452,16 +466,63 @@
       view.animate({ center: coords, duration: MAP_ANIMATION_MS });
       if (!markerFeature){
         markerFeature = new ol.Feature({ geometry: new ol.geom.Point(coords) });
-        markerFeature.setStyle(ensureMarkerStyle());
+        if (!markerStyle) markerStyle = ensureMarkerStyle("#00bfff", "#083150");
+        markerFeature.setStyle(markerStyle);
         markerLayer.getSource().addFeature(markerFeature);
       }else{
         markerFeature.getGeometry().setCoordinates(coords);
       }
     }
 
+    function updateDeviceMarker(lat, lon){
+      if (!window.ol || !mapEl) return;
+      const lngLat = [Number(lon), Number(lat)];
+      const coords = ol.proj.fromLonLat(lngLat);
+      if (!mapInstance){ createMap(lngLat); }
+      if (!deviceMarkerFeature){
+        deviceMarkerFeature = new ol.Feature({ geometry: new ol.geom.Point(coords) });
+        deviceMarkerStyle = ensureMarkerStyle("#7CFC00", "#0a3");
+        deviceMarkerFeature.setStyle(deviceMarkerStyle);
+        markerLayer.getSource().addFeature(deviceMarkerFeature);
+      }else{
+        deviceMarkerFeature.getGeometry().setCoordinates(coords);
+      }
+      if (mapInstance){
+        mapInstance.getView().animate({ center: coords, duration: MAP_ANIMATION_MS });
+      }
+    }
+
+    /* 端末のGPSを監視してマップと同期 */
+    const deviceGeo = { watchId: null, lastTs: null };
+    function startDeviceWatch(){
+      if (!navigator.geolocation) {
+        deviceStatusText = "端末GPS未対応";
+        refreshMapStatus();
+        return;
+      }
+      deviceStatusText = "端末GPS待機中…";
+      refreshMapStatus();
+      deviceGeo.watchId = navigator.geolocation.watchPosition(
+        (pos)=>{
+          const { latitude, longitude, accuracy } = pos.coords || {};
+          if (latitude == null || longitude == null) return;
+          updateDeviceMarker(latitude, longitude);
+          deviceGeo.lastTs = pos.timestamp || Date.now();
+          const accText = (typeof accuracy === "number" && isFinite(accuracy)) ? `±${Math.round(accuracy)}m` : "";
+          deviceStatusText = `端末GPS: ${formatTimeHMS(deviceGeo.lastTs)} ${accText}`;
+          refreshMapStatus();
+        },
+        (err)=>{
+          deviceStatusText = `端末GPSエラー: ${err.message}`;
+          refreshMapStatus();
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 7000 }
+      );
+    }
     async function fetchGps(){
       if (!mapStatus) return;
-      mapStatus.textContent = "GPS読み込み中…";
+      serverStatusText = "サーバーGPS読込中…";
+      refreshMapStatus();
       try{
         const url = `${API_BASE}/api/latest_gps?user_id=${encodeURIComponent(USER_ID)}&fields=${encodeURIComponent(GPS_FIELDS)}&time_range=${encodeURIComponent(GPS_RANGE)}`;
         const res = await fetch(url);
@@ -471,9 +532,11 @@
         const { lat, lon, timestamp } = json;
         if (lat == null || lon == null) throw new Error("座標が取得できません");
         updateMapView(Number(lat), Number(lon));
-        mapStatus.textContent = `GPS更新: ${formatTimeToJP(timestamp)}`;
+        serverStatusText = `サーバーGPS: ${formatTimeToJP(timestamp)}`;
+        refreshMapStatus();
       }catch(e){
-        mapStatus.textContent = "GPSエラー: " + e.message + " / デフォルト位置を表示します";
+        serverStatusText = "サーバーGPSエラー: " + e.message;
+        refreshMapStatus();
         updateMapView(FUJISAWA.lat, FUJISAWA.lon);
       }
     }
@@ -488,8 +551,12 @@
     const mapStatus = document.getElementById("map-status");
     let mapInstance = null;
     let markerLayer = null;
-    let markerFeature = null;
+    let markerFeature = null;       // サーバー側の最新位置
     let markerStyle = null;
+    let deviceMarkerFeature = null; // 端末の現在地
+    let deviceMarkerStyle = null;
+    let serverStatusText = "";
+    let deviceStatusText = "";
 
     function formatTimeToJP(ts) {
       if (!ts) return "-";
@@ -501,6 +568,21 @@
       const hh = String(d.getHours()).padStart(2, "0");
       const mi = String(d.getMinutes()).padStart(2, "0");
       return `${yyyy}/${mm}/${dd} ${hh}:${mi}時点`;
+    }
+    function formatTimeHMS(ts){
+      const d = new Date(ts);
+      if (isNaN(d)) return "-";
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      return `${hh}:${mi}:${ss}`;
+    }
+    function refreshMapStatus(){
+      if (!mapStatus) return;
+      const items = [];
+      if (deviceStatusText) items.push(deviceStatusText);
+      if (serverStatusText) items.push(serverStatusText);
+      mapStatus.textContent = items.join(" | ") || "位置情報待機中…";
     }
 
     async function fetchLatest(){
@@ -707,9 +789,22 @@
         }
       });
     }
+    const playbackBtn = document.getElementById("playback-btn");
+    if (playbackBtn){
+      playbackBtn.addEventListener("click", ()=>{
+        if (!assistantAudio || !assistantAudio.src){
+          setStatus("再生できる音声がありません");
+          return;
+        }
+        assistantAudio.muted = false;
+        assistantAudio.play().catch(err=>{
+          setStatus("再生エラー: " + err.message);
+        });
+      });
+    }
 
     document.addEventListener("DOMContentLoaded", ()=>{
-      fetchWeather(); fetchLatest(); fetchGps();
+      fetchWeather(); fetchLatest(); fetchGps(); startDeviceWatch();
       window._timer_sensor  = setInterval(fetchLatest, 30_000);
       window._timer_weather = setInterval(fetchWeather, 300_000);
       window._timer_gps     = setInterval(fetchGps, 60_000);

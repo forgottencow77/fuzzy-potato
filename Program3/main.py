@@ -43,7 +43,7 @@ ALTITUDE_MEASUREMENT = os.getenv("ALTITUDE_MEASUREMENT", "gps_fix")
 ALTITUDE_FIELD = os.getenv("ALTITUDE_FIELD", "altitude_m")
 
 ENABLE_ASSISTANT = os.getenv("ENABLE_ASSISTANT", "1").lower() not in {"0", "false", "off"}
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "turbo")  # whisper large-v3 turbo 系をデフォルトに
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # "cpu" をデフォルトにして GPU 未整備環境でのクラッシュを防止
